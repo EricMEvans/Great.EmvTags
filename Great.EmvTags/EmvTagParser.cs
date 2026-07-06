@@ -1,13 +1,44 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Net.NetworkInformation;
 using System.Text;
 
 namespace Great.EmvTags
 {
     public static class EmvTagParser
     {
-
+        /// <summary>
+        /// Delegate to handle multi-byte length tag in a custom manner. Return the index of the last byte of the length field.
+        /// </summary>
+        /// <param name="primaryLengthByte">The initial length byte of the multi-byte length field.</param>
+        /// <param name="currentTagBytes">The current tag whose length data is being calculated.</param>
+        /// <returns>The index of the last byte of the length field.</returns>
+        public delegate int EmvTagMultiByteLengthDelegateCallback(byte primaryLengthByte, byte[] currentTagBytes);
+        
+        /// <summary>
+        /// Some EMV readers may not follow the EMV standard for multi-byte length tags where bits 0-6 are used to indicate the number of subsequent length bytes.
+        /// This delegate allows you to provide a custom handler for such cases. IDTech's EMV readers, for example, use bits 5 &amp; 6 for encryption and masking indicators and would otherwise
+        /// completely throw off the length calculation.
+        /// </summary>
+        /// <example language="csharp">
+        /// var tag5A = new byte[] { 0x5A };
+        /// var tag57 = new byte[] { 0x57 };
+        /// EmvTagParser.EmvTagMultiByteLengthHandler = (primaryLengthByte, currentTagBytes) =>
+        /// {
+        ///     int i = 0;
+        ///     var specialTag = currentTagBytes.SequenceEqual(tag5A) || currentTagBytes.SequenceEqual(tag57);
+        ///
+        ///     if ((primaryLengthByte &amp; 0x40) == 0x40 &amp;&amp; specialTag)
+        ///         i = primaryLengthByte - 0xC0; //Subtract to remove 11xx xxxx bits from the length byte to get the actual length of the length field
+        ///     else if ((primaryLengthByte &amp; 0x20) == 0x20 &amp;&amp; specialTag)
+        ///         i = primaryLengthByte - 0xA0; //Subtract to remove 1x1x xxxx bits from the length byte to get the actual length of the length field
+        ///     else
+        ///         i = primaryLengthByte - 0x80; //Subtract to remove 1xxx xxxx bits from the length byte to get the actual length of the length field
+        ///
+        ///     return i;
+        /// };
+        /// </example>
+        public static EmvTagMultiByteLengthDelegateCallback EmvTagMultiByteLengthHandler { get; set; }
+        
         public static EmvTlvList ParseDol(ExtendedByteArray rawDol)
         {
             EmvTlvList result = new EmvTlvList();
@@ -113,7 +144,11 @@ namespace Great.EmvTags
                 if (rawTlv[i].IsMultiByteLength())
                 {
                     start++;
-                    i += rawTlv[i] - 0x80;
+
+                    if (EmvTagMultiByteLengthHandler != null)
+                        i += EmvTagMultiByteLengthHandler(rawTlv[i], tag);
+                    else
+                        i += rawTlv[i] - 0x80;
                 }
 
                 int lengthOfLength = (i - start) + 1;
