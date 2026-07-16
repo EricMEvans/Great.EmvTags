@@ -1,6 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+using System;
 
 namespace Great.EmvTags
 {
@@ -13,7 +11,15 @@ namespace Great.EmvTags
         /// <param name="currentTagBytes">The current tag whose length data is being calculated.</param>
         /// <returns>The index of the last byte of the length field.</returns>
         public delegate int EmvTagMultiByteLengthDelegateCallback(byte primaryLengthByte, byte[] currentTagBytes);
-        
+
+        /// <summary>
+        /// Delegate to handle multi-byte tag end in a custom manner. Return the index of the last byte of the tag.
+        /// </summary>
+        /// <param name="tlvBytes">The TLV byte array.</param>
+        /// <param name="index">The current index in the TLV byte array.</param>
+        /// <returns>The index of the last byte of the tag.</returns>
+        public delegate int EmvTagMultiByteTagEndDelegateCallback(byte[] tlvBytes, int index);
+
         /// <summary>
         /// Some EMV readers may not follow the EMV standard for multi-byte length tags where bits 0-6 are used to indicate the number of subsequent length bytes.
         /// This delegate allows you to provide a custom handler for such cases. IDTech's EMV readers, for example, use bits 5 &amp; 6 for encryption and masking indicators and would otherwise
@@ -37,8 +43,14 @@ namespace Great.EmvTags
         ///     return i;
         /// };
         /// </example>
-        public static EmvTagMultiByteLengthDelegateCallback EmvTagMultiByteLengthHandler { get; set; }
-        
+        public static EmvTagMultiByteLengthDelegateCallback EmvTagMultiByteLengthHandler { get; set; } = (primaryLengthByte, currentTagBytes) => { return primaryLengthByte - 0x80; };
+
+        /// <summary>
+        /// With multi-byte tags, the tag end is normally indicated by the first bit of the last byte being set to 0 (0xxx xxxx).
+        /// Some EMV readers may not follow the EMV standard for multi-byte tag endings so this delegate allows you to provide a custom handler for such cases.
+        /// </summary>
+        public static EmvTagMultiByteTagEndDelegateCallback EmvTagMultiByteTagEndHandler { get; set; } = (tlvBytes, index) => { while (!tlvBytes[++index].IsLastTagByte()); return index; };
+
         public static EmvTlvList ParseDol(ExtendedByteArray rawDol)
         {
             EmvTlvList result = new EmvTlvList();
@@ -51,14 +63,25 @@ namespace Great.EmvTags
 
                 i = t.Item1;
             }
+
             return result;
         }
 
+        /// <summary>
+        /// Parses a byte array into an EMV TLV object. This method will parse the tag, length, and value fields of the TLV object.
+        /// </summary>
+        /// <param name="rawTlv">The raw TLV data to parse.</param>
+        /// <returns>The parsed EMV TLV object.</returns>
         public static EmvTlv ParseTlv(ExtendedByteArray rawTlv)
         {
             return Parse(rawTlv.Bytes).Item2;
         }
 
+        /// <summary>
+        /// Parses a byte array into an EMV TLV object. This method will parse the tag, length, and value fields of the TLV object.
+        /// </summary>
+        /// <param name="rawTlv">The raw TLV data to parse.</param>
+        /// <returns>The parsed EMV TLV object.</returns>
         public static EmvTlvList ParseTlvList(ExtendedByteArray rawTlv)
         {
             EmvTlvList result = new EmvTlvList();
@@ -71,6 +94,7 @@ namespace Great.EmvTags
 
                 i = t.Item1;
             }
+
             return result;
         }
 
@@ -127,11 +151,10 @@ namespace Great.EmvTags
                     continue;
                 }
 
-
                 // RETRIEVE TAG
                 if (rawTlv[i].IsMultiByteTag())
                 {
-                    while (!rawTlv[++i].IsLastTagByte()) ;
+                    i = EmvTagMultiByteTagEndHandler(rawTlv, i);
                 }
 
                 int lengthOfTag = (i - start) + 1;
@@ -145,10 +168,7 @@ namespace Great.EmvTags
                 {
                     start++;
 
-                    if (EmvTagMultiByteLengthHandler != null)
-                        i += EmvTagMultiByteLengthHandler(rawTlv[i], tag);
-                    else
-                        i += rawTlv[i] - 0x80;
+                    i += EmvTagMultiByteLengthHandler(rawTlv[i], tag);
                 }
 
                 int lengthOfLength = (i - start) + 1;
@@ -156,7 +176,7 @@ namespace Great.EmvTags
                 Array.Copy(rawTlv, start, length, 0, lengthOfLength);
                 start = ++i;
 
-                if(parseValue)
+                if (parseValue)
                 {
                     // RETRIEVE VALUE
                     int lengthOfValue = length.ByteArrayToInt();
@@ -173,14 +193,12 @@ namespace Great.EmvTags
                     {
                         tlv.Children.AddRange(ParseTlvList(tlv.Value.Bytes));
                     }
-                } 
+                }
                 else
                 {
                     // Not retrieving the value, just create the object (DOL parsing)
                     tlv = new EmvTlv(tag, length.ByteArrayToInt());
                 }
-
-                
 
                 return new Tuple<int, EmvTlv>(start, tlv);
             }
